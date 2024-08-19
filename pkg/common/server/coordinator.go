@@ -15,8 +15,6 @@ package server
 
 import (
 	"context"
-
-	"github.com/pingcap/tiflow/pkg/orchestrator"
 )
 
 // Coordinator is the master of the ticdc cluster,
@@ -27,6 +25,8 @@ import (
 // 5. response for open API call
 type Coordinator interface {
 	AsyncStop()
-	// Tick handles messages
-	Tick(ctx context.Context, metadata orchestrator.ReactorState) (orchestrator.ReactorState, error)
+	// Initialize initialize coordinator
+	Initialize(ctx context.Context) error
+	// Run handles messages
+	Run(ctx context.Context) error
 }

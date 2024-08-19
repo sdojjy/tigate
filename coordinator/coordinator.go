@@ -16,7 +16,6 @@ package coordinator
 import (
 	"context"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/flowbehappy/tigate/heartbeatpb"
@@ -26,7 +25,7 @@ import (
 	"github.com/flowbehappy/tigate/pkg/messaging"
 	"github.com/flowbehappy/tigate/pkg/metrics"
 	"github.com/flowbehappy/tigate/scheduler"
-	"github.com/flowbehappy/tigate/utils"
+	"github.com/flowbehappy/tigate/server/watcher"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/pkg/errors"
@@ -45,9 +44,7 @@ type coordinator struct {
 	initialized bool
 	version     int64
 
-	// message buf from remote
-	msgLock sync.RWMutex
-	msgBuf  []*messaging.TargetMessage
+	msgCh chan *messaging.TargetMessage
 
 	// for log print
 	lastCheckTime time.Time
@@ -55,16 +52,24 @@ type coordinator struct {
 	// scheduling fields
 	supervisor *scheduler.Supervisor
 
-	lastState *orchestrator.GlobalReactorState
+	allChangefeeds         map[string]*ChangefeedMeta
+	scheduledStateMachines map[string]*scheduler.StateMachine
+	absentStateMachines    map[string]*scheduler.StateMachine
+	removingStateMachines  map[string]*scheduler.StateMachine
+	runningTasks           map[string]*scheduler.ScheduleTask
+	maxTaskConcurrency     int
 
-	lastSaveTime         time.Time
-	lastTickTime         time.Time
-	scheduledChangefeeds utils.Map[scheduler.InferiorID, scheduler.Inferior]
+	lastSaveTime time.Time
+	lastTickTime time.Time
 
 	gcManager  gc.Manager
 	pdClient   pd.Client
 	pdClock    pdutil.Clock
 	etcdClient etcd.CDCEtcdClient
+
+	nodeManager     *watcher.NodeManager
+	nodeInitializer *NodeInitializer
+	nodeChanged     chan struct{}
 }
 
 func NewCoordinator(capture *common.NodeInfo,
@@ -72,14 +77,18 @@ func NewCoordinator(capture *common.NodeInfo,
 	pdClock pdutil.Clock,
 	etcdClient etcd.CDCEtcdClient, version int64) server.Coordinator {
 	c := &coordinator{
-		version:              version,
-		nodeInfo:             capture,
-		scheduledChangefeeds: utils.NewBtreeMap[scheduler.InferiorID, scheduler.Inferior](),
-		lastTickTime:         time.Now(),
-		gcManager:            gc.NewManager(etcdClient.GetGCServiceID(), pdClient, pdClock),
-		pdClient:             pdClient,
-		etcdClient:           etcdClient,
-		pdClock:              pdClock,
+		version:                version,
+		nodeInfo:               capture,
+		lastTickTime:           time.Now(),
+		gcManager:              gc.NewManager(etcdClient.GetGCServiceID(), pdClient, pdClock),
+		pdClient:               pdClient,
+		etcdClient:             etcdClient,
+		pdClock:                pdClock,
+		msgCh:                  make(chan *messaging.TargetMessage, 1024),
+		nodeChanged:            make(chan struct{}, 1),
+		scheduledStateMachines: make(map[string]*scheduler.StateMachine),
+		absentStateMachines:    make(map[string]*scheduler.StateMachine),
+		maxTaskConcurrency:     10000,
 	}
 	id := scheduler.ChangefeedID(model.DefaultChangeFeedID("coordinator"))
 	c.supervisor = scheduler.NewSupervisor(
@@ -92,38 +101,82 @@ func NewCoordinator(capture *common.NodeInfo,
 	// receive messages
 	appcontext.GetService[messaging.MessageCenter](appcontext.MessageCenter).
 		RegisterHandler(messaging.CoordinatorTopic, func(_ context.Context, msg *messaging.TargetMessage) error {
-			c.msgLock.Lock()
-			c.msgBuf = append(c.msgBuf, msg)
-			c.msgLock.Unlock()
+			c.msgCh <- msg
 			return nil
+		})
+	c.nodeManager = appcontext.GetService[*watcher.NodeManager](watcher.NodeManagerName)
+	c.nodeManager.RegisterNodeChangeHandler("coordinator",
+		func(newNodes []*common.NodeInfo, removedNodes []*common.NodeInfo) {
+			c.nodeChanged <- struct{}{}
 		})
 	return c
 }
 
-// Tick is the entrance of the coordinator, it will be called by the etcd watcher every 50ms.
+func (c *coordinator) Initialize(ctx context.Context) error {
+	metas, err := loadAllChangefeeds(ctx, c.etcdClient)
+	c.allChangefeeds = metas
+	for id, meta := range metas {
+		if shouldRunChangefeed(meta.info.State) {
+			cf := newChangefeed(c, model.DefaultChangeFeedID(id), meta.info, meta.status.CheckpointTs)
+			stm, err := scheduler.NewStateMachine(scheduler.ChangefeedID(model.DefaultChangeFeedID(id)), nil, cf)
+			if err != nil {
+				return err
+			}
+			c.absentStateMachines[id] = stm
+		}
+	}
+
+	c.nodeInitializer = &NodeInitializer{
+		initialized: false,
+		nodes:       make(map[common.NodeID]*NodeStatus),
+		coordinator: c,
+	}
+	for _, node := range c.nodeManager.GetAliveNodes() {
+		c.nodeInitializer.nodes[node.ID] = NewNodeStatus(node)
+	}
+	msgs, err := c.nodeInitializer.HandleAliveNodeUpdate()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	c.sendMessages(msgs)
+	return err
+}
+
+// Run is the entrance of the coordinator, it will be called by the etcd watcher every 50ms.
 //  1. Handle message reported by other modules.
 //  2. Check if the node is changed:
 //     - if a new node is added, send bootstrap message to that node ,
 //     - if a node is removed, clean related state machine that binded to that node.
 //  3. Schedule changefeeds if all node is bootstrapped.
-func (c *coordinator) Tick(
-	ctx context.Context, rawState orchestrator.ReactorState,
-) (orchestrator.ReactorState, error) {
-	state := rawState.(*orchestrator.GlobalReactorState)
-	c.lastState = state
-
-	now := time.Now()
-	metrics.CoordinatorCounter.Add(float64(now.Sub(c.lastTickTime)) / float64(time.Second))
-	c.lastTickTime = now
-
-	if err := c.updateGCSafepoint(ctx, state); err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	// 1. handle grpc messages
-	err := c.handleMessages()
-	if err != nil {
-		return nil, errors.Trace(err)
+func (c *coordinator) Run(
+	ctx context.Context,
+) error {
+	gcTick := time.NewTicker(time.Minute)
+	scheduleTick := time.NewTicker(time.Millisecond)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-gcTick.C:
+			if err := c.updateGCSafepoint(ctx); err != nil {
+				log.Warn("update gc safepoint failed",
+					zap.Error(err))
+			}
+		case <-scheduleTick.C:
+			if err := c.scheduleMaintainer(); err != nil {
+				return errors.Trace(err)
+			}
+		case msg := <-c.msgCh:
+			// handle grpc messages
+			if err := c.handleMessage(msg); err != nil {
+				log.Warn("handle message failed", zap.Any("msg", msg), zap.Error(err))
+			}
+		case <-c.nodeChanged:
+			c.nodeInitializer.HandleAliveNodeUpdate()
+		}
+		now := time.Now()
+		metrics.CoordinatorCounter.Add(float64(now.Sub(c.lastTickTime)) / float64(time.Second))
+		c.lastTickTime = now
 	}
 
 	// 2. check if nodes is changed
@@ -144,40 +197,33 @@ func (c *coordinator) Tick(
 	c.saveChangefeedStatus()
 
 	c.printStatus()
-	return state, nil
 }
 
-func (c *coordinator) handleMessages() error {
-	c.msgLock.Lock()
-	buf := c.msgBuf
-	c.msgBuf = nil
-	c.msgLock.Unlock()
-	for _, msg := range buf {
-		switch msg.Type {
-		case messaging.TypeCoordinatorBootstrapResponse:
-			req := msg.Message.(*heartbeatpb.CoordinatorBootstrapResponse)
+func (c *coordinator) handleMessage(msg *messaging.TargetMessage) error {
+	switch msg.Type {
+	case messaging.TypeCoordinatorBootstrapResponse:
+		req := msg.Message.(*heartbeatpb.CoordinatorBootstrapResponse)
+		var statues = make([]scheduler.InferiorStatus, 0, len(req.Statuses))
+		for _, status := range req.Statuses {
+			statues = append(statues, &MaintainerStatus{status})
+		}
+		c.supervisor.UpdateCaptureStatus(msg.From.String(), statues)
+	case messaging.TypeMaintainerHeartbeatRequest:
+		if c.supervisor.CheckAllCaptureInitialized() {
+			req := msg.Message.(*heartbeatpb.MaintainerHeartbeat)
 			var statues = make([]scheduler.InferiorStatus, 0, len(req.Statuses))
 			for _, status := range req.Statuses {
 				statues = append(statues, &MaintainerStatus{status})
 			}
-			c.supervisor.UpdateCaptureStatus(msg.From.String(), statues)
-		case messaging.TypeMaintainerHeartbeatRequest:
-			if c.supervisor.CheckAllCaptureInitialized() {
-				req := msg.Message.(*heartbeatpb.MaintainerHeartbeat)
-				var statues = make([]scheduler.InferiorStatus, 0, len(req.Statuses))
-				for _, status := range req.Statuses {
-					statues = append(statues, &MaintainerStatus{status})
-				}
-				msgs, err := c.supervisor.HandleStatus(msg.From.String(), statues)
-				if err != nil {
-					log.Error("handle status failed", zap.Error(err))
-					return errors.Trace(err)
-				}
-				c.sendMessages(msgs)
+			msgs, err := c.supervisor.HandleStatus(msg.From.String(), statues)
+			if err != nil {
+				log.Error("handle status failed", zap.Error(err))
+				return errors.Trace(err)
 			}
-		default:
-			log.Panic("unexpected message", zap.Any("message", msg))
+			c.sendMessages(msgs)
 		}
+	default:
+		log.Panic("unexpected message", zap.Any("message", msg))
 	}
 	return nil
 }
@@ -203,9 +249,21 @@ func (c *coordinator) sendMessages(msgs []*messaging.TargetMessage) {
 	}
 }
 
-func (c *coordinator) scheduleMaintainer(state *orchestrator.GlobalReactorState) ([]*messaging.TargetMessage, error) {
-	if !c.supervisor.CheckAllCaptureInitialized() {
-		return nil, nil
+func (c *coordinator) scheduleMaintainer() error {
+	if !c.nodeInitializer.CheckAllNodeInitialized() {
+		log.Info("skip scheduling since not all captures are initialized")
+		return nil
+	}
+	batchSize := c.maxTaskConcurrency - len(c.runningTasks)
+	if batchSize <= 0 {
+		log.Warn("Skip scheduling since there are too many running task",
+			zap.String("id", s.ID.String()),
+			zap.Int("totalInferiors", allInferiors.Len()),
+			zap.Int("totalStateMachines", s.StateMachines.Len()),
+			zap.Int("maxTaskConcurrency", s.maxTaskConcurrency),
+			zap.Int("runningTasks", s.RunningTasks.Len()),
+		)
+		return msgs, nil
 	}
 	// check all changefeeds.
 	for id, cfState := range state.Changefeeds {
@@ -243,8 +301,8 @@ func (c *coordinator) newBootstrapMessage(captureID model.CaptureID) *messaging.
 
 func (c *coordinator) newChangefeed(id scheduler.InferiorID) scheduler.Inferior {
 	cfID := model.ChangeFeedID(id.(scheduler.ChangefeedID))
-	cfInfo := c.lastState.Changefeeds[cfID]
-	cf := newChangefeed(c, cfID, cfInfo.Info, cfInfo.Status.CheckpointTs)
+	cfInfo := c.allChangefeeds[cfID.ID]
+	cf := newChangefeed(c, cfID, cfInfo.info, cfInfo.status.CheckpointTs)
 	c.scheduledChangefeeds.ReplaceOrInsert(scheduler.ChangefeedID(cfInfo.ID), cf)
 	return cf
 }
@@ -373,15 +431,13 @@ func updateStatus(
 		})
 }
 
-func (c *coordinator) updateGCSafepoint(
-	ctx context.Context, state *orchestrator.GlobalReactorState,
-) error {
-	minCheckpointTs, forceUpdate := c.calculateGCSafepoint(state)
+func (c *coordinator) updateGCSafepoint(ctx context.Context) error {
+	minCheckpointTs := c.calculateGCSafepoint()
 	// When the changefeed starts up, CDC will do a snapshot read at
 	// (checkpointTs - 1) from TiKV, so (checkpointTs - 1) should be an upper
 	// bound for the GC safepoint.
 	gcSafepointUpperBound := minCheckpointTs - 1
-	err := c.gcManager.TryUpdateGCSafePoint(ctx, gcSafepointUpperBound, forceUpdate)
+	err := c.gcManager.TryUpdateGCSafePoint(ctx, gcSafepointUpperBound, true)
 	return errors.Trace(err)
 }
 
@@ -389,24 +445,16 @@ func (c *coordinator) updateGCSafepoint(
 // Note: we need to maintain a TiCDC service GC safepoint for each upstream TiDB cluster
 // to prevent upstream TiDB GC from removing data that is still needed by TiCDC.
 // GcSafepoint is the minimum checkpointTs of all changefeeds that replicating a same upstream TiDB cluster.
-func (c *coordinator) calculateGCSafepoint(state *orchestrator.GlobalReactorState) (
-	uint64, bool,
-) {
+func (c *coordinator) calculateGCSafepoint() uint64 {
 	var minCpts uint64 = math.MaxUint64
-	var forceUpdate = false
 
-	for changefeedID, changefeedState := range state.Changefeeds {
-		if changefeedState.Info == nil || !changefeedState.Info.NeedBlockGC() {
+	for _, meta := range c.allChangefeeds {
+		if meta.info == nil || !meta.info.NeedBlockGC() {
 			continue
 		}
-		checkpointTs := changefeedState.Info.GetCheckpointTs(changefeedState.Status)
+		checkpointTs := meta.info.GetCheckpointTs(meta.status)
 		if minCpts > checkpointTs {
 			minCpts = checkpointTs
-		}
-		// Force update when adding a new changefeed.
-		exist := c.scheduledChangefeeds.Has(scheduler.ChangefeedID(changefeedID))
-		if !exist {
-			forceUpdate = true
 		}
 	}
 	// check if the upstream has a changefeed, if not we should update the gc safepoint
@@ -414,7 +462,33 @@ func (c *coordinator) calculateGCSafepoint(state *orchestrator.GlobalReactorStat
 		ts := c.pdClock.CurrentTime()
 		minCpts = oracle.GoTimeToTS(ts)
 	}
-	return minCpts, forceUpdate
+	return minCpts
+}
+
+// handleRemovedNodes handles server changes.
+func (c *coordinator) handleRemovedNodes(
+	removed []common.NodeID,
+) ([]*messaging.TargetMessage, error) {
+	sentMsgs := make([]*messaging.TargetMessage, 0)
+	if len(removed) > 0 {
+		s.StateMachines.Ascend(func(id InferiorID, stateMachine *StateMachine) bool {
+			for _, captureID := range removed {
+				msg, affected := stateMachine.HandleCaptureShutdown(captureID)
+				if msg != nil {
+					sentMsgs = append(sentMsgs, msg)
+				}
+				if affected {
+					// Cleanup its running task.
+					s.RunningTasks.Delete(id)
+					log.Info("remove running task",
+						zap.String("stid", s.ID.String()),
+						zap.String("id", id.String()))
+				}
+			}
+			return true
+		})
+	}
+	return sentMsgs, nil
 }
 
 func (c *coordinator) printStatus() {
