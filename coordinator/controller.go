@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/ticdc/coordinator/operator"
 	coscheduler "github.com/pingcap/ticdc/coordinator/scheduler"
 	"github.com/pingcap/ticdc/heartbeatpb"
+	"github.com/pingcap/ticdc/logservice/logservicepb"
 	"github.com/pingcap/ticdc/logservice/schemastore"
 	"github.com/pingcap/ticdc/pkg/bootstrap"
 	"github.com/pingcap/ticdc/pkg/common"
@@ -53,6 +54,10 @@ const (
 	createChangefeedMaxRetry      = 10
 	createChangefeedRetryInterval = 5 * time.Second
 )
+
+// stopChangefeedWaitInterval is how often the API waits for a stop changefeed
+// operator to finish. Tests shorten it to keep the waits short.
+var stopChangefeedWaitInterval = time.Second
 
 // Controller schedules and balance changefeeds, there are 3 main components:
 //  1. scheduler: generate operators for handling different scheduling tasks.
@@ -405,6 +410,7 @@ func (c *Controller) onPeriodTask() {
 	// Drain liveness transitions and drain-target broadcasts are retry-based
 	// control loops. Drive them from the periodic task so they keep progressing
 	// even when no fresh heartbeat or node-change event arrives.
+	c.requestEventBrokerDispatcherCount()
 	c.advanceActiveDrainLiveness()
 	c.maybeBroadcastDispatcherDrainTarget(false)
 }
@@ -433,6 +439,8 @@ func (c *Controller) onMessage(ctx context.Context, msg *messaging.TargetMessage
 		c.syncDrainSchedulingPolicy()
 	case messaging.TypeLogCoordinatorResolvedTsResponse:
 		c.onLogCoordinatorReportResolvedTs(msg)
+	case messaging.TypeEventBrokerDispatcherCountResponse:
+		c.drainController.ObserveEventBrokerDispatcherCountResponse(msg.Message[0].(*logservicepb.EventBrokerDispatcherCountResponse))
 	default:
 		log.Warn("unknown message type, ignore it",
 			zap.String("type", msg.Type.String()),
@@ -689,7 +697,19 @@ func (c *Controller) handleSingleMaintainerStatus(
 			return nil
 		}
 	}
-	// Do not finish the add operator before the initial marker is persisted.
+	acceptMoveOriginCheckpoint := c.operatorController.AcceptsMoveOriginStopStatus(cfID, from, status)
+	handoffCheckpointAdvanced := false
+	if acceptMoveOriginCheckpoint &&
+		cf != nil &&
+		c.validateMaintainerNode(cf, from, cfID) {
+		// Advance the handoff checkpoint before the operator enters OriginStopped.
+		// This prevents a concurrent Schedule from creating the target maintainer
+		// with the checkpoint that preceded the terminal origin report.
+		handoffCheckpointAdvanced = cf.AdvanceCheckpointTs(status.CheckpointTs)
+	}
+
+	// Do not finish the add operator before the initial marker is persisted;
+	// advance a move only after its handoff checkpoint is visible.
 	c.operatorController.UpdateOperatorStatus(cfID, from, status)
 
 	if cf == nil {
@@ -697,15 +717,29 @@ func (c *Controller) handleSingleMaintainerStatus(
 		return nil
 	}
 
-	if !c.validateMaintainerNode(cf, from, cfID) {
-		return nil
-	}
 	if !common.MaintainerEpochMatches(status.MaintainerEpoch, cf.GetInfo().Epoch) {
+		// A move bumps the owner epoch before the old maintainer is stopped. Its
+		// fenced terminal report is therefore expected to carry the previous
+		// epoch. Preserve the final committed checkpoint before adding the new
+		// owner, while continuing to reject all other stale-epoch reports.
+		if acceptMoveOriginCheckpoint && handoffCheckpointAdvanced {
+			log.Info("advance checkpoint from stopping maintainer",
+				zap.Stringer("changefeedID", cfID),
+				zap.Stringer("nodeID", from),
+				zap.Uint64("checkpointTs", status.CheckpointTs),
+				zap.Uint64("statusMaintainerEpoch", status.MaintainerEpoch),
+				zap.Uint64("currentMaintainerEpoch", cf.GetInfo().Epoch))
+			return newChangefeedChange(cf, cf.GetInfo().State, ChangeTs, nil)
+		}
+
 		log.Warn("drop stale maintainer status",
 			zap.Stringer("changefeed", cfID),
 			zap.Stringer("node", from),
 			zap.Uint64("statusMaintainerEpoch", status.MaintainerEpoch),
 			zap.Uint64("currentMaintainerEpoch", cf.GetInfo().Epoch))
+		return nil
+	}
+	if !c.validateMaintainerNode(cf, from, cfID) {
 		return nil
 	}
 
@@ -1084,7 +1118,7 @@ func (c *Controller) RemoveChangefeed(ctx context.Context, id common.ChangeFeedI
 	c.apiLock.Unlock()
 
 	count := 0
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(stopChangefeedWaitInterval)
 	defer ticker.Stop()
 	for !op.IsFinished() {
 		select {
@@ -1122,7 +1156,7 @@ func (c *Controller) PauseChangefeed(ctx context.Context, id common.ChangeFeedID
 	c.apiLock.Unlock()
 
 	count := 0
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(stopChangefeedWaitInterval)
 	defer ticker.Stop()
 	for !op.IsFinished() {
 		select {

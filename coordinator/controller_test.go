@@ -344,6 +344,16 @@ func TestMaintainerHeartbeatAdmissionDropsStaleMaintainerEpoch(t *testing.T) {
 	require.Nil(t, controller.handleSingleMaintainerStatus(owner, stale, cfID))
 	require.Equal(t, uint64(100), cf.GetStatus().CheckpointTs)
 
+	staleTerminal := &heartbeatpb.MaintainerStatus{
+		ChangefeedID:    cfID.ToPB(),
+		CheckpointTs:    300,
+		State:           heartbeatpb.ComponentState_Stopped,
+		BootstrapDone:   true,
+		MaintainerEpoch: 1,
+	}
+	require.Nil(t, controller.handleSingleMaintainerStatus(owner, staleTerminal, cfID))
+	require.Equal(t, uint64(100), cf.GetStatus().CheckpointTs)
+
 	current := &heartbeatpb.MaintainerStatus{
 		ChangefeedID:    cfID.ToPB(),
 		CheckpointTs:    200,
@@ -353,6 +363,66 @@ func TestMaintainerHeartbeatAdmissionDropsStaleMaintainerEpoch(t *testing.T) {
 	}
 	require.NotNil(t, controller.handleSingleMaintainerStatus(owner, current, cfID))
 	require.Equal(t, uint64(200), cf.GetStatus().CheckpointTs)
+}
+
+func TestMaintainerMovePreservesOriginFinalCheckpoint(t *testing.T) {
+	appcontext.SetService(appcontext.MessageCenter, messaging.NewMockMessageCenter())
+	nodeManager := watcher.NewNodeManager(nil, nil)
+	appcontext.SetService(watcher.NodeManagerName, nodeManager)
+
+	db := changefeed.NewChangefeedDB(1)
+	cfID := common.NewChangeFeedIDWithName("cf", common.DefaultKeyspaceName)
+	origin := node.ID("origin")
+	target := node.ID("target")
+	nodeManager.GetAliveNodes()[origin] = &node.Info{ID: origin}
+	nodeManager.GetAliveNodes()[target] = &node.Info{ID: target}
+	cf := changefeed.NewChangefeed(cfID, &config.ChangeFeedInfo{
+		ChangefeedID: cfID,
+		Config:       config.GetDefaultReplicaConfig(),
+		SinkURI:      "blackhole://",
+		State:        config.StateNormal,
+		Epoch:        1,
+	}, 100, false)
+	db.AddReplicatingMaintainer(cf, origin)
+
+	opController := operator.NewOperatorController(
+		&node.Info{ID: node.ID("coordinator")},
+		db,
+		nil,
+		nil,
+		10,
+	)
+	moveOp := operator.NewMoveMaintainerOperator(db, cf, origin, target)
+	require.True(t, opController.AddOperator(moveOp))
+
+	// A move persists the next owner epoch before the old owner reports its
+	// final checkpoint.
+	info, err := cf.GetInfo().Clone()
+	require.NoError(t, err)
+	info.Epoch = 2
+	cf.SetInfo(info)
+
+	controller := &Controller{
+		changefeedDB:       db,
+		operatorController: opController,
+	}
+	finalStatus := &heartbeatpb.MaintainerStatus{
+		ChangefeedID:    cfID.ToPB(),
+		CheckpointTs:    200,
+		State:           heartbeatpb.ComponentState_Stopped,
+		BootstrapDone:   true,
+		MaintainerEpoch: 1,
+	}
+	change := controller.handleSingleMaintainerStatus(origin, finalStatus, cfID)
+	require.NotNil(t, change)
+	require.Equal(t, ChangeTs, change.changeType)
+	require.Equal(t, uint64(200), cf.GetStatus().CheckpointTs)
+
+	addMessage := moveOp.Schedule()
+	require.NotNil(t, addMessage)
+	addRequest := addMessage.Message[0].(*heartbeatpb.AddMaintainerRequest)
+	require.Equal(t, uint64(200), addRequest.CheckpointTs)
+	require.Equal(t, uint64(2), addRequest.MaintainerEpoch)
 }
 
 func TestHandleNonExistentChangefeedRemovesWithReportedEpoch(t *testing.T) {
@@ -788,6 +858,11 @@ func expectResumeChangefeed(
 }
 
 func TestPauseChangefeed(t *testing.T) {
+	// The operator finishes in milliseconds, do not wait a second for it.
+	defer func(original time.Duration) {
+		stopChangefeedWaitInterval = original
+	}(stopChangefeedWaitInterval)
+	stopChangefeedWaitInterval = 10 * time.Millisecond
 	ctrl := gomock.NewController(t)
 	backend := mock_changefeed.NewMockBackend(ctrl)
 	changefeedDB := changefeed.NewChangefeedDB(1216)
@@ -824,7 +899,8 @@ func TestPauseChangefeed(t *testing.T) {
 			if op != nil {
 				op.OnTaskRemoved()
 			}
-			time.Sleep(time.Second)
+			// Finish the operator as soon as it shows up instead of once a second.
+			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 	backend.EXPECT().PauseChangefeed(gomock.Any(), gomock.Any()).Return(errors.New("failed")).Times(1)
@@ -964,6 +1040,11 @@ func TestGetChangefeedReturnedInfoMutationDoesNotRaceWithStoredInfo(t *testing.T
 }
 
 func TestRemoveChangefeed(t *testing.T) {
+	// The operator finishes in milliseconds, do not wait a second for it.
+	defer func(original time.Duration) {
+		stopChangefeedWaitInterval = original
+	}(stopChangefeedWaitInterval)
+	stopChangefeedWaitInterval = 10 * time.Millisecond
 	ctrl := gomock.NewController(t)
 	backend := mock_changefeed.NewMockBackend(ctrl)
 	changefeedDB := changefeed.NewChangefeedDB(1216)
@@ -995,7 +1076,8 @@ func TestRemoveChangefeed(t *testing.T) {
 			if op != nil {
 				op.OnTaskRemoved()
 			}
-			time.Sleep(time.Second)
+			// Finish the operator as soon as it shows up instead of once a second.
+			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 	changefeedDB.AddReplicatingMaintainer(cf, "node1")
