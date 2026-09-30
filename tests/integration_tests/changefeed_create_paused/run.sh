@@ -79,7 +79,7 @@ run() {
 			run_sql "CREATE TABLE create_paused.$id (id INT PRIMARY KEY, value INT)" 127.0.0.1 "$port"
 		done
 	done
-	START_TS=$(run_cdc_cli tso query --pd="$PD_ADDR")
+	START_TS=$(run_cdc_cli_tso_query "$UP_PD_HOST_1" "$UP_PD_PORT_1")
 	for id in api cli omitted explicit legacy; do
 		run_sql "INSERT INTO create_paused.$id VALUES (1, 10)" "$UP_TIDB_HOST" "$UP_TIDB_PORT"
 	done
@@ -87,7 +87,7 @@ run() {
 	# Simulate recovery records left by an older changefeed with the same name.
 	# Their timestamp is newer than row 1, so accidental recovery would skip it.
 	local stale_ts
-	stale_ts=$(run_cdc_cli tso query --pd="$PD_ADDR")
+	stale_ts=$(run_cdc_cli_tso_query "$UP_PD_HOST_1" "$UP_PD_PORT_1")
 	run_sql "CREATE DATABASE IF NOT EXISTS tidb_cdc" "$DOWN_TIDB_HOST" "$DOWN_TIDB_PORT"
 	run_sql "CREATE TABLE IF NOT EXISTS tidb_cdc.ddl_ts_v1 (
         ticdc_cluster_id VARCHAR(255), changefeed VARCHAR(255), ddl_ts VARCHAR(18),

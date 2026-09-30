@@ -34,7 +34,6 @@ import (
 	"github.com/pingcap/ticdc/pkg/node"
 	"github.com/pingcap/ticdc/pkg/pdutil"
 	"github.com/pingcap/ticdc/pkg/txnutil/gc"
-	"github.com/pingcap/ticdc/pkg/util"
 	"github.com/pingcap/ticdc/server/watcher"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/atomic"
@@ -407,7 +406,7 @@ func TestPausedCreationFirstBootstrap(t *testing.T) {
 			id := common.NewChangeFeedIDWithName("paused", common.DefaultKeyspaceName)
 			info := &config.ChangeFeedInfo{
 				ChangefeedID: id, State: config.StateStopped,
-				BootstrapPending: util.AddressOf(true), StartTs: 100, Epoch: 1,
+				BootstrapPending: new(true), StartTs: 100, Epoch: 1,
 				Config: config.GetDefaultReplicaConfig(), SinkURI: "mysql://127.0.0.1:3306",
 			}
 			cf := changefeed.NewChangefeed(id, info, 100, true)

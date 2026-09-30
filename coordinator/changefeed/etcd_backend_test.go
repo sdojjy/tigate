@@ -23,7 +23,6 @@ import (
 	"github.com/pingcap/ticdc/pkg/common"
 	"github.com/pingcap/ticdc/pkg/config"
 	"github.com/pingcap/ticdc/pkg/etcd"
-	"github.com/pingcap/ticdc/pkg/util"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -580,7 +579,7 @@ func TestFinishInit(t *testing.T) {
 			cdc.EXPECT().GetClusterID().Return("default").AnyTimes()
 			backend := NewEtcdBackend(cdc)
 			id := common.NewChangeFeedIDWithName("paused", common.DefaultKeyspaceName)
-			info := &config.ChangeFeedInfo{ChangefeedID: id, Epoch: 2, State: config.StateNormal, BootstrapPending: util.AddressOf(true)}
+			info := &config.ChangeFeedInfo{ChangefeedID: id, Epoch: 2, State: config.StateNormal, BootstrapPending: new(true)}
 			if scenario == "old-epoch" {
 				info.Epoch = 3
 			}
