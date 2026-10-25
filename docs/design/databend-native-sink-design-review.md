@@ -1,10 +1,10 @@
-# 定稿 v1.1：TiCDC 原生 Databend Sink——按 bend-cdc 既有语义迁移
+# 定稿 v1.2：TiCDC 原生 Databend Sink——按 bend-cdc 既有语义迁移
 
 | 项目 | 当前裁决 |
 |---|---|
-| 版本 / 日期 | v1.1 / 2026-10-25；v1.0定稿后按用户要求增加conflict-key及指定DDL跳过 |
-| 状态 | 设计已接受，首版实现及受控真实链路验收通过；不表示生产HA/成本已验收 |
-| 实现分支 | `feat/databend-native-sink`，从固定新架构commit `2bf6dacd0aec9ac2fad464600e47341f9aa951f2` 创建 |
+| 版本 / 日期 | v1.2 / 2026-10-25；按用户纠正迁移到官方pingcap/ticdc/master基线 |
+| 状态 | 已移植到官方master并通过独立本地/真实链路验证；旧基线结果不混用，仍不承诺生产HA/成本 |
+| 实现分支 | `feat/databend-native-sink`，基于官方`pingcap/ticdc/master`的`b9179182f3c1c5db5a018029f41eb07eab804051`；推送目标为其fork `sdojjy/tigate` |
 | 正确性基线 | 对齐固定版本 bend-cdc 的 TiDB 增量路径，不为迁移另造更强的通用同步系统 |
 | 实施主线 | 迁移现有 Databend raw/MERGE、mapper、schema epoch 核心；新增原生事件、spool、TiCDC回调适配 |
 | 输入与来源默认值 | 与固定版本CloudStorage默认配置保持拆分模式 raw-change=false；首版固定raw source，stream仅保留后续验收入口 |
@@ -12,15 +12,16 @@
 | 缓冲 | 保留有界内存 + 限额本地spool + 现有PostEnqueue背压 |
 | 全量范围 | 不支持/编排Dumpling、CSV、COPY INTO，不实现历史空表发现/预建 |
 | 首版边界 | 沿用单逻辑目标表单writer、目标静态独占前提；故障恢复先验证，不承诺新建自动HA体系 |
-| 已验证 | 本地/race/lint/build及真实TiUP→CDC→staging Lake：9组PASS、32列、磁盘spool/排空重启；见§8.2–8.3，未验收生产HA/成本 |
+| 验证记录 | §8.1–8.5及旧实验报告属于旧基线；官方基线的独立结果见§8.6及迁移报告，不混用结论 |
 
-**本文是唯一当前定稿设计。** [v0.3](/Users/jiangjianyuan/work/git/pingcap/ticdc/docs/design/databend-native-sink-design-review-v0.3.md)和[v0.2](/Users/jiangjianyuan/work/git/pingcap/ticdc/docs/design/databend-native-sink-design-review-v0.2.md)仅保留历史分析；其中manifest、K/H/S、raw generation等不是并行实施要求。设计评审不再以新增通用协议扩大范围；实现中若发现不可规避的范围变更，单独说明并复审。
+**本文是唯一当前定稿设计。** [v0.3](databend-native-sink-design-review-v0.3.md)和[v0.2](databend-native-sink-design-review-v0.2.md)仅保留历史分析；其中manifest、K/H/S、raw generation等不是并行实施要求。设计评审不再以新增通用协议扩大范围；实现中若发现不可规避的范围变更，单独说明并复审。
 
 ## 0. 固定源码与原则
 
-- TiCDC：`/Users/jiangjianyuan/work/git/pingcap/ticdc`，commit `2bf6dacd0aec9ac2fad464600e47341f9aa951f2`，origin `git@github.com:sdojjy/tiflow.git`。
+- 当前TiCDC：官方仓库 `https://github.com/pingcap/ticdc`，master固定为 `b9179182f3c1c5db5a018029f41eb07eab804051`；本地 `/Users/jiangjianyuan/work/git/pingcap/ticdc-official`，origin为其已核验fork `git@github.com:sdojjy/tigate.git`。
+- 旧实现基线为 `2bf6dacd0aec9ac2fad464600e47341f9aa951f2`，旧投递 `sdojjy/tiflow:457c2f9bd` 已纠正；仅保留历史/备份，不是当前基线。当前分支不包含该基线额外的9个暂停任务相关提交。
 - bend-cdc：`/Users/jiangjianyuan/work/git/pingcap/webapi` 下 `bend-cdc`，commit `b6481621021e82aee659ad88e8e6c00f6dd11906`。
-- 设计期间曾在旧架构master / `03ed2432bd7782198742d3aa20e07edcc47097e6` 下按Git对象核对；用户批准实现后已创建并切到上述新架构基线的实现分支，没有在旧master开发。
+- 设计期间曾在旧架构master / `03ed2432bd7782198742d3aa20e07edcc47097e6` 下按Git对象核对；当时创建了2bf6dacd基线分支；用户随后明确要求官方pingcap/ticdc仓库，当前已按上条纠正。
 
 原则：**替换输入和运行时外壳，不先重设计已经存在的目标应用算法。** 新增约束必须归入三类之一：既有行为迁移、移除S3后必须补的接入、可延期的增强；不能只因理论上可加强就进入首版。
 
@@ -292,23 +293,29 @@ RENAME TABLE/RENAME TABLES与DROP DATABASE在旧DML排空后warning跳过、正�
 
 真实TiUP→CDC→staging Lake补测：无键CRUD+ADD COLUMN及单PK override、重命名后进度/后续DML、DROP DATABASE后进度/保留目标/新库表DML，3组均通过。详细证据见[补充报告§8](./databend-native-sink-parity-fault-report.md)。分区保护未放开：lane只约束单进程，跨capture同一逻辑表排他未证明；不是Lake无法存储分区数据。
 
+### 8.6 官方仓库基线迁移（2026-10-25）
+
+用户纠正目标后，当前实现已在独立目录`ticdc-official`基于官方master的`b9179182f`建立分支，再仅移植原sink提交；没有merge/rebase旧自定义分支，也没有带入暂停任务等无关提交。`sdojjy/tigate`的fork parent通过GitHub元数据核验为`pingcap/ticdc`。当前官方源码、Go依赖及完整历史均保留；与上游diff仍仅sink/有限注册及计量接口/测试文档。
+
+当前适配与独立验证见[官方基线迁移报告](./databend-native-sink-upstream-port.md)。上游已包含sink接口、write gate、spool和detach callback；不复制旧框架文件覆盖上游。旧实验报告保留为历史，不自动标成官方基线通过。
+
 ## 9. 可复核源码
 
 bend-cdc链接按固定commit的本地源码核对；远端reviewer按相同Git对象路径读取。
 
-- [Canal事件转换与现有目标配置，L376–559](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/databend_merge_sink.go#L376-L559)。
-- [PK/schema与ApplySchema，L93–163](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/databend_merge_sink.go#L93-L163)。
-- [raw写入与代数记账，L640–840](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L640-L840)；[MergeProgress，L399–416](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L399-L416)。
-- [Flush排空，L503–578](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L503-L578)；[MERGE/代数推进/清理，L1230–1416](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L1230-L1416)。
-- [现有MERGE SQL，L1628–1705](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L1628-L1705)；[stream创建及fallback，L889–942](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L889-L942)。
+- [Canal事件转换与现有目标配置](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/databend_merge_sink.go#L376-L559)。
+- [PK/schema与ApplySchema](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/databend_merge_sink.go#L93-L163)。
+- [raw写入与代数记账](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L640-L840)；[MergeProgress](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L399-L416)。
+- [Flush排空](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L503-L578)；[MERGE/代数推进/清理](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L1230-L1416)。
+- [现有MERGE SQL](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L1628-L1705)；[stream创建及fallback](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L889-L942)。
 - [applied watermark与MergeProgress接口](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/applied_watermark.go)；[schema epoch](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/schema_epoch.go)；[TRUNCATE](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/truncate.go)。
 - [schema队列的flush/警告范围](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/schema_queue.go)；[Flush错误传播测试](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/flush_permanent_test.go)。
-- [TiCDC Sink接口](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/downstreamadapter/sink/sink.go)；[原生DML回调](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/pkg/common/event/dml_event.go#L660-L711)。
-- [raw-change与sink Run/error/close接入](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/downstreamadapter/dispatchermanager/dispatcher_manager.go)；[原生DDL字段](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/pkg/common/event/ddl_event.go)。
-- [CloudStorage raw-change默认值，L774–784](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/pkg/config/sink.go#L774-L784)；[scanner拆分与延后INSERT，L970–1014](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/pkg/eventservice/event_scanner.go#L970-L1014)。
-- [规范化入口，L14–39](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/tidb_values.go#L14-L39)；[外层epoch保护，L215–235](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/databend_merge_sink.go#L215-L235)。
-- [spool oversized接纳，L503–510](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/pkg/sink/spool/spool.go#L503-L510)；[Discard执行postFlush，L734–746](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/pkg/sink/spool/spool.go#L734-L746)。
-- [raw微秒格式化，L995–1003](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L995-L1003)；[纳秒单调时间，L1755–1763](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L1755-L1763)；[SchemaFile使用FinishedTs，L208–215](https://github.com/sdojjy/tiflow/blob/2bf6dacd0aec9ac2fad464600e47341f9aa951f2/pkg/cloudstorage/schema_file.go#L208-L215)。
+- [TiCDC Sink接口](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/downstreamadapter/sink/sink.go)；[原生DML回调](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/pkg/common/event/dml_event.go)。
+- [raw-change与sink Run/error/close接入](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/downstreamadapter/dispatchermanager/dispatcher_manager.go)；[原生DDL字段](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/pkg/common/event/ddl_event.go)。
+- [CloudStorage raw-change默认值](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/pkg/config/sink.go)；[scanner拆分与延后INSERT](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/pkg/eventservice/event_scanner.go)。
+- [规范化入口](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/tidb_values.go#L14-L39)；[外层epoch保护](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/source/tidb/databend_merge_sink.go#L215-L235)。
+- [spool oversized接纳](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/pkg/sink/spool/spool.go)；[Discard执行postFlush](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/pkg/sink/spool/spool.go)。
+- [raw微秒格式化](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L995-L1003)；[纳秒单调时间](/Users/jiangjianyuan/work/git/pingcap/webapi/bend-cdc/pkg/sink/databend/databend_cdc.go#L1755-L1763)；[SchemaFile使用FinishedTs](https://github.com/pingcap/ticdc/blob/b9179182f3c1c5db5a018029f41eb07eab804051/pkg/cloudstorage/schema_file.go)。
 
 
 ## 10. 首版使用方式与实际支持边界

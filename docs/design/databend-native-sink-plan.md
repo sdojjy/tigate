@@ -2,13 +2,15 @@
 
 日期：2026-10-24。状态：历史分析摘要；当前设计已评审定稿，首版实现及受控真实链路验收通过，未提交、未部署共享CDC。
 
-当前规范见 [定稿设计 v1.1](/Users/jiangjianyuan/work/git/pingcap/ticdc/docs/design/databend-native-sink-design-review.md)，配套 [实现评审入口](/Users/jiangjianyuan/work/git/pingcap/ticdc/docs/design/databend-native-sink-review-prompt.md)。本文件保留为初始分析历史摘要，不是当前实施规范；唯一主路径与范围以v1.0为准。实现分支为 `feat/databend-native-sink`；v0.2/v0.3已另存历史版本，不同时实施。
+当前规范见 [定稿设计 v1.2](databend-native-sink-design-review.md)，配套 [实现评审入口](databend-native-sink-review-prompt.md)。本文件保留为初始分析历史摘要，不是当前实施规范；唯一主路径与范围以v1.0为准。实现分支为 `feat/databend-native-sink`；v0.2/v0.3已另存历史版本，不同时实施。
 
 v0.4.1局部修正：首版raw-change=false保持默认拆分和源顺序，首版固定raw source；Native只规范化一次；UNKNOWN在核心内层截断；spool清理不挂成功回调且不进oversized旁路；add_time按落库精度单调；DDL epoch明确取FinishedTs并迁移外层过滤。上述为已接受的范围；首批核心、运行时接入与待验收状态见定稿§8.1–8.2/§10，没有扩大框架范围。
 
 最新裁决：对齐bend-cdc既有正确性，迁移raw/stream或raw source/MERGE、mapper和schema epoch核心，只新增native adapter、spool与TiCDC callback适配。删除manifest/K-H-S新算法、DML ledger与新raw_generation，不因review无限增设框架协议。保留MERGE后确认、SEALED/分片独立回收和必要失败关闭；stream全批覆盖、终态、原生事件与旧路径差异要局部验证。当前有T1–T6的部分本地覆盖及[9组真实TiUP/Lake功能验收](./databend-native-sink-e2e-report.md)，在途故障/HA与成本仍未验收，T1–T7不整体关闭；无全量工具工作包。
 
 需求修订（2026-10-24）：第一版必须采用新架构 S3 sink 类似的 **内存缓冲 + 有配额本地磁盘 spool + 背压**，不再采用仅内存攒批的初版建议。磁盘 spool 是临时缓冲，不是恢复日志；确认点仍是 MERGE 成功。
+
+当前基线已迁至官方 `https://github.com/pingcap/ticdc` 的 `b9179182f`，本文件其余内容保留历史分析；实际差异/验收以[官方迁移报告](./databend-native-sink-upstream-port.md)为准。
 
 ## 1. 结论与边界
 

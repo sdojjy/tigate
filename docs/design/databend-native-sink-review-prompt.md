@@ -1,18 +1,20 @@
 # 定稿后的实现评审入口：按 bend-cdc 既有语义迁移
 
-用户已确认设计评审通过，[定稿v1.1](/Users/jiangjianyuan/work/git/pingcap/ticdc/docs/design/databend-native-sink-design-review.md)按v0.4.1范围进入 `feat/databend-native-sink` 分支实现。后续优先评审实际代码与该定稿的偏差，不重新扩展通用协议；实现状态见设计§8.1–8.3及§10；[真实验收报告](./databend-native-sink-e2e-report.md)记录本地TiUP→当前CDC→staging Lake的9组PASS、32列及排空重启。单测与受控链路通过不等于在途故障/自动HA验收。
+用户已确认设计评审通过，[定稿v1.2](databend-native-sink-design-review.md)按v0.4.1范围进入 `feat/databend-native-sink` 分支实现。后续优先评审实际代码与该定稿的偏差，不重新扩展通用协议；当前实现状态见设计§8.6及官方迁移报告；[旧基线验收报告](./databend-native-sink-e2e-report.md)只记录当时的9组PASS、32列及排空重启，不自动计为官方基线通过。单测与受控链路通过不等于在途故障/自动HA验收。
 
 最新补充：[bend-cdc能力对照与真实故障验收](./databend-native-sink-parity-fault-report.md)。重点看已验证的迁移差异，不把旧版“warning跳过”算已支持；非空唯一键fallback已验证，参数化字符widening局部修复见源码。
 
 最新用户裁决已实现：URI `conflict-key`、指定RENAME/DROP DATABASE warning跳过；真实3组通过，见补充报告§8。此前对应“仍拒绝/未迁移”的结论是历史状态；分区保护未开放。
 
+当前基线已纠正为官方仓库；旧2bf6dacd分支及旧验收为历史。请先读[官方基线迁移报告](./databend-native-sink-upstream-port.md)，不要把tiflow备份分支当当前实现。
+
 ## 基线与范围
 
-- 新架构TiCDC：`/Users/jiangjianyuan/work/git/pingcap/ticdc`，固定commit `2bf6dacd0aec9ac2fad464600e47341f9aa951f2`。
+- 新架构TiCDC：`/Users/jiangjianyuan/work/git/pingcap/ticdc-official`，官方 `pingcap/ticdc/master`，固定commit `b9179182f3c1c5db5a018029f41eb07eab804051`，当前目录 `ticdc-official`。
 - bend-cdc：`/Users/jiangjianyuan/work/git/pingcap/webapi` 下 `bend-cdc`，固定commit `b6481621021e82aee659ad88e8e6c00f6dd11906`。
 - 设计基线按固定Git对象核验；实现位于上述新分支，以实际分支/工作区代码为准，不切分支或覆盖开发中的改动。
 - 用户要求：只对齐bend-cdc当前TiDB增量路径已正确支持的语义，核心改动集中sink，不为迁移重做TiCDC框架。
-- [v0.3](/Users/jiangjianyuan/work/git/pingcap/ticdc/docs/design/databend-native-sink-design-review-v0.3.md)、[v0.2](/Users/jiangjianyuan/work/git/pingcap/ticdc/docs/design/databend-native-sink-design-review-v0.2.md)以及旧review comment都是历史讨论；manifest/K-H-S/AppliedCycle/新raw_generation不是当前要求。
+- [v0.3](databend-native-sink-design-review-v0.3.md)、[v0.2](databend-native-sink-design-review-v0.2.md)以及旧review comment都是历史讨论；manifest/K-H-S/AppliedCycle/新raw_generation不是当前要求。
 
 ## 唯一主线
 

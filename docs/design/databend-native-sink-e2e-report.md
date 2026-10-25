@@ -1,5 +1,7 @@
 # TiCDC 原生 Lake Sink：本地 TiUP → staging Lake 实测报告
 
+**历史基线记录**：本报告实验发生在2bf6dacd分支。当前实现已迁至官方pingcap/ticdc；官方基线重新验证见[迁移报告](./databend-native-sink-upstream-port.md)，不能直接把下述结果视为新基线通过。
+
 日期：2026-10-25（Asia/Shanghai）。状态：**本轮受控端到端验收通过；未提交、未推送、未部署到共享 CDC 集群。**
 
 后续追加的bend-cdc对照、DDL默认值/nullability矩阵和真实响应丢失实验见[补充报告](./databend-native-sink-parity-fault-report.md)。下述9组是首轮记录，不替代后续实验；“无PK不支持”应精确为“无可用PK/非空唯一键且依赖显式conflictKey的表”。

@@ -9,6 +9,11 @@ compares actual TiDB rows against actual Lake rows, and removes only those owned
 resources after success. On failure, it keeps its isolated database/feed and a
 private result file for diagnosis. Never point it at a production source/target.
 
+Current upstream base: `pingcap/ticdc` master
+`b9179182f3c1c5db5a018029f41eb07eab804051`; fork delivery is
+`sdojjy/tigate`, not the legacy tiflow repository. Earlier test reports using
+2bf6dacd are historical and must not be reused as new-base validation.
+
 ## Prepare
 
 1. Build `cmd/cdc` from this branch. Use `--newarch` and UTC for the test capture.

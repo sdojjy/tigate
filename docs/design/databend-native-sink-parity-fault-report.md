@@ -1,5 +1,7 @@
 # bend-cdc 能力对照与 native sink DDL / 故障补充验收
 
+**历史基线记录**：本报告实验发生在2bf6dacd分支。当前实现已迁至官方pingcap/ticdc；官方基线重新验证见[迁移报告](./databend-native-sink-upstream-port.md)，不能直接把下述结果视为新基线通过。
+
 日期：2026-10-25。结论：**已完成真实 Lake 能力对照、11 组真实源端矩阵、2 类 DML 故障及 19 个 DDL 提交边界恢复测试；发现并修复一个局部迁移退化。仍有明确未迁移能力，不宣称全部替代 bend-cdc。**
 
 **后续更新**：下述对照矩阵是上一轮状态；按用户新要求，`conflict-key`现已实现，RENAME/DROP DATABASE改为跳过不阻塞。最新实现/真实测试见§8；分区保护仍保留。
