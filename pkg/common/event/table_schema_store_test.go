@@ -253,3 +253,12 @@ func TestTableSchemaStoreNonMysqlTableIDsBootstrapOnly(t *testing.T) {
 
 	require.ElementsMatch(t, []int64{10, 20}, store.GetAllNormalTableIds())
 }
+
+func TestTableSchemaStoreWhenDatabendSink(t *testing.T) {
+	store := NewTableSchemaStore(nil, common.DatabendSinkType, false)
+	require.NotNil(t, store)
+	require.Nil(t, store.TableIDStore)
+	require.Nil(t, store.tableNameStore)
+	store.AddEvent(&DDLEvent{FinishedTs: 100})
+	require.Empty(t, store.GetAllTableIds())
+}

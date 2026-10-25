@@ -44,6 +44,7 @@ func InitMetrics(registry *prometheus.Registry) {
 	kafka.InitMetrics(registry)
 	gc.InitMetrics(registry)
 	metrics.InitCloudStorageMetrics(registry)
+	metrics.InitDatabendMetrics(registry)
 	initRedoMetrics(registry)
 	initDDLMetrics(registry)
 }

@@ -102,6 +102,8 @@ func RFCCode(err error) (errors.RFCErrorCode, bool) {
 }
 
 var changefeedUnRetryableErrors = []*errors.Error{
+	ErrDatabendInvalidData,
+	ErrDatabendCommitUnknown,
 	ErrExpressionColumnNotFound,
 	ErrExpressionParseFailed,
 	ErrSchemaSnapshotNotFound,

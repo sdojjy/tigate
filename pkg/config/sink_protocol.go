@@ -114,6 +114,12 @@ func (p Protocol) String() string {
 const (
 	// KafkaScheme indicates the scheme is kafka.
 	KafkaScheme = "kafka"
+	// DatabendScheme is the native HTTPS warehouse sink.
+	DatabendScheme = "databend"
+	// LakeScheme is the TiDB Cloud Lake HTTPS endpoint alias.
+	LakeScheme = "lake"
+	// DatabendHTTPScheme is the explicit plaintext local/test warehouse sink.
+	DatabendHTTPScheme = "databend+http"
 	// KafkaSSLScheme indicates the scheme is kafka+ssl.
 	KafkaSSLScheme = "kafka+ssl"
 	// BlackHoleScheme indicates the scheme is blackhole.

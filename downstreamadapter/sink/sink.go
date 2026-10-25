@@ -19,6 +19,7 @@ import (
 
 	"github.com/pingcap/ticdc/downstreamadapter/sink/blackhole"
 	"github.com/pingcap/ticdc/downstreamadapter/sink/cloudstorage"
+	"github.com/pingcap/ticdc/downstreamadapter/sink/databend"
 	"github.com/pingcap/ticdc/downstreamadapter/sink/kafka"
 	"github.com/pingcap/ticdc/downstreamadapter/sink/mysql"
 	"github.com/pingcap/ticdc/downstreamadapter/sink/pulsar"
@@ -72,6 +73,8 @@ func New(ctx context.Context, cfg *config.ChangefeedConfig, changefeedID common.
 		return pulsar.New(ctx, changefeedID, sinkURI, cfg.SinkConfig, cfg.CaseSensitive, keyspaceID)
 	case config.S3Scheme, config.FileScheme, config.GCSScheme, config.GSScheme, config.AzblobScheme, config.AzureScheme, config.CloudStorageNoopScheme:
 		return cloudstorage.New(ctx, changefeedID, sinkURI, cfg.SinkConfig, cfg.CaseSensitive, cfg.EnableTableAcrossNodes, nil, keyspaceID)
+	case config.DatabendScheme, config.DatabendHTTPScheme, config.LakeScheme:
+		return databend.New(ctx, changefeedID, cfg, sinkURI, keyspaceID)
 	case config.BlackHoleScheme:
 		return blackhole.New(changefeedID, keyspaceID)
 	}
@@ -97,6 +100,8 @@ func Verify(ctx context.Context, cfg *config.ChangefeedConfig, changefeedID comm
 		return pulsar.Verify(ctx, changefeedID, sinkURI, cfg.SinkConfig, cfg.CaseSensitive)
 	case config.S3Scheme, config.FileScheme, config.GCSScheme, config.GSScheme, config.AzblobScheme, config.AzureScheme, config.CloudStorageNoopScheme:
 		return cloudstorage.Verify(ctx, changefeedID, sinkURI, cfg.SinkConfig, cfg.CaseSensitive, cfg.EnableTableAcrossNodes)
+	case config.DatabendScheme, config.DatabendHTTPScheme, config.LakeScheme:
+		return databend.Verify(ctx, cfg, sinkURI)
 	case config.BlackHoleScheme:
 		return nil
 	}
