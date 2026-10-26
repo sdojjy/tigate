@@ -59,6 +59,8 @@ func downstreamTypeFromScheme(scheme string) string {
 		return config.AzblobScheme
 	case config.CloudStorageNoopScheme:
 		return config.CloudStorageNoopScheme
+	case config.DatabendScheme, config.DatabendHTTPScheme, config.LakeScheme:
+		return config.DatabendScheme
 	case config.BlackHoleScheme:
 		return config.BlackHoleScheme
 	case "":
