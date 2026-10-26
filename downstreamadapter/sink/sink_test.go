@@ -78,17 +78,17 @@ func requireInvalidSinkURIError(t *testing.T, err error) {
 	require.Contains(t, errMsg, "invalid URL escape")
 }
 
-func TestDatabendFactoryRegistration(t *testing.T) {
-	cfg := &config.ChangefeedConfig{SinkURI: "databend+http://127.0.0.1:1?exclusive=true&spool-dir=" + url.QueryEscape(t.TempDir())}
+func TestLakeFactoryRegistration(t *testing.T) {
+	cfg := &config.ChangefeedConfig{SinkURI: "lake+http://127.0.0.1:1?exclusive=true&spool-dir=" + url.QueryEscape(t.TempDir())}
 	s, err := New(context.Background(), cfg, common.NewChangefeedID(common.DefaultKeyspaceName), common.DefaultKeyspaceID)
 	require.NoError(t, err)
 	defer s.Close()
-	require.Equal(t, common.DatabendSinkType, s.SinkType())
+	require.Equal(t, common.LakeSinkType, s.SinkType())
 	store := commonEvent.NewTableSchemaStore(nil, s.SinkType(), false)
 	s.SetTableSchemaStore(store)
-	require.False(t, config.IsStorageScheme("databend"))
-	require.False(t, config.IsMySQLCompatibleScheme("databend"))
-	cfg.SinkURI = "databend://user:verysecure@localhost?exclusive=false"
+	require.False(t, config.IsStorageScheme("lake"))
+	require.False(t, config.IsMySQLCompatibleScheme("lake"))
+	cfg.SinkURI = "lake://user:verysecure@localhost?exclusive=false"
 	_, err = New(context.Background(), cfg, common.NewChangefeedID(common.DefaultKeyspaceName), common.DefaultKeyspaceID)
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "verysecure")
