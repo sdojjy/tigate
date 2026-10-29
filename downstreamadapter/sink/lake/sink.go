@@ -94,9 +94,11 @@ func New(ctx context.Context, id common.ChangeFeedID, cfg *config.ChangefeedConf
 	}
 	return s, nil
 }
-func (s *Sink) SinkType() common.SinkType                         { return common.LakeSinkType }
-func (s *Sink) IsNormal() bool                                    { return s.normal.Load() && s.ctx.Err() == nil }
-func (s *Sink) BatchCount() int                                   { return min(s.opts.sourceEvents, s.opts.batchRows) }
+func (s *Sink) SinkType() common.SinkType { return common.LakeSinkType }
+func (s *Sink) IsNormal() bool { return s.normal.Load() && s.ctx.Err() == nil }
+
+func (s *Sink) BatchCount() int { return min(s.opts.sourceEvents, s.opts.batchRows) }
+
 func (s *Sink) BatchBytes() int                                   { return int(min(s.opts.sourceBytes/2, s.opts.batchBytes)) }
 func (s *Sink) SetWriteGate(gate *writelease.Gate)                { s.client.gate.Store(gate) }
 func (s *Sink) SetTableSchemaStore(*commonEvent.TableSchemaStore) {}
