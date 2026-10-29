@@ -70,7 +70,7 @@ func (l *tableLane) run(ctx context.Context) error {
 			case item.event != nil:
 				err = l.encode(ctx, &item)
 			case item.ddl != nil:
-				err = l.sink.statistics.RecordDDLExecution(func() (string, error) { return "lake", l.schemas.applyDDL(ctx, item.ddl) })
+				err = l.sink.statistics.RecordDDLExecution(item.ddl.GetDDLType().String(), func() error { return l.schemas.applyDDL(ctx, item.ddl) })
 			default:
 				err = l.flushAll(ctx)
 			}
@@ -288,12 +288,12 @@ func (l *tableLane) flush(ctx context.Context, key string) error {
 			rows = append(rows, normalizedRow{r.ID, r.Payload, r.CommitTs, r.Action})
 		}
 	}
-	var result applyResult
-	err := l.sink.statistics.RecordBatchExecution(func() (int, int64, error) {
-		var err error
-		result, err = batch.state.writer.applyBatch(ctx, rows, time.Now())
-		return len(rows), batch.bytes, err
-	})
+	result, err := batch.state.writer.applyBatch(ctx, rows, time.Now())
+	if err != nil {
+		l.sink.statistics.RecordDMLError()
+	} else {
+		l.sink.statistics.RecordDMLBatch(len(rows), batch.bytes)
+	}
 	if result.applied {
 		delete(l.batches, key)
 		l.entries -= len(batch.fragments)

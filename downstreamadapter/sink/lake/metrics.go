@@ -15,32 +15,45 @@
 package lake
 
 import (
-	sinkmetrics "github.com/pingcap/ticdc/downstreamadapter/sink/metrics"
 	"github.com/pingcap/ticdc/pkg/common"
 	"github.com/pingcap/ticdc/pkg/sink/spool"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+var (
+	lakeBufferBytes    = prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "ticdc", Subsystem: "lake", Name: "buffer_bytes", Help: "Local Lake memory and physical spool bytes."}, []string{"namespace", "changefeed", "kind"})
+	lakeBufferEntries  = prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "ticdc", Subsystem: "lake", Name: "buffer_entries", Help: "Local Lake pending enqueue, segment and quota waiter counts."}, []string{"namespace", "changefeed", "kind"})
+	lakeSpoolDuration  = prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "ticdc", Subsystem: "lake", Name: "spool_wait_seconds", Help: "Lake spool quota wait time.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 20)}, []string{"namespace", "changefeed"})
+	lakeSpoolLoad      = prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "ticdc", Subsystem: "lake", Name: "spool_load_bytes", Help: "Lake encoded bytes loaded from local spool.", Buckets: prometheus.ExponentialBuckets(1024, 4, 9)}, []string{"namespace", "changefeed"})
+	lakeSpoolRotations = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "ticdc", Subsystem: "lake", Name: "spool_rotations_total", Help: "Lake local spool segment rotations."}, []string{"namespace", "changefeed"})
+)
+
+// InitMetrics registers the metrics owned by the Lake sink.
+func InitMetrics(registry *prometheus.Registry) {
+	registry.MustRegister(lakeBufferBytes, lakeBufferEntries, lakeSpoolDuration, lakeSpoolLoad, lakeSpoolRotations)
+}
 
 func newSpoolMetrics(id common.ChangeFeedID) *spool.Metrics {
 	k, f := id.Keyspace(), id.Name()
 	return &spool.Metrics{
-		MemoryBytes:        sinkmetrics.LakeBufferBytes.WithLabelValues(k, f, "memory"),
-		DiskBytes:          sinkmetrics.LakeBufferBytes.WithLabelValues(k, f, "disk"),
-		PendingPostEnqueue: sinkmetrics.LakeBufferEntries.WithLabelValues(k, f, "enqueue"),
-		DiskQuotaWaiters:   sinkmetrics.LakeBufferEntries.WithLabelValues(k, f, "waiters"),
-		SegmentCount:       sinkmetrics.LakeBufferEntries.WithLabelValues(k, f, "segments"),
-		DiskQuotaWait:      sinkmetrics.LakeSpoolDuration.WithLabelValues(k, f),
-		LoadedBytes:        sinkmetrics.LakeSpoolLoad.WithLabelValues(k, f),
-		RotatedCount:       sinkmetrics.LakeSpoolRotations.WithLabelValues(k, f),
+		MemoryBytes:        lakeBufferBytes.WithLabelValues(k, f, "memory"),
+		DiskBytes:          lakeBufferBytes.WithLabelValues(k, f, "disk"),
+		PendingPostEnqueue: lakeBufferEntries.WithLabelValues(k, f, "enqueue"),
+		DiskQuotaWaiters:   lakeBufferEntries.WithLabelValues(k, f, "waiters"),
+		SegmentCount:       lakeBufferEntries.WithLabelValues(k, f, "segments"),
+		DiskQuotaWait:      lakeSpoolDuration.WithLabelValues(k, f),
+		LoadedBytes:        lakeSpoolLoad.WithLabelValues(k, f),
+		RotatedCount:       lakeSpoolRotations.WithLabelValues(k, f),
 		Close: func() {
 			for _, kind := range []string{"memory", "disk"} {
-				sinkmetrics.LakeBufferBytes.DeleteLabelValues(k, f, kind)
+				lakeBufferBytes.DeleteLabelValues(k, f, kind)
 			}
 			for _, kind := range []string{"enqueue", "waiters", "segments"} {
-				sinkmetrics.LakeBufferEntries.DeleteLabelValues(k, f, kind)
+				lakeBufferEntries.DeleteLabelValues(k, f, kind)
 			}
-			sinkmetrics.LakeSpoolDuration.DeleteLabelValues(k, f)
-			sinkmetrics.LakeSpoolLoad.DeleteLabelValues(k, f)
-			sinkmetrics.LakeSpoolRotations.DeleteLabelValues(k, f)
+			lakeSpoolDuration.DeleteLabelValues(k, f)
+			lakeSpoolLoad.DeleteLabelValues(k, f)
+			lakeSpoolRotations.DeleteLabelValues(k, f)
 		},
 	}
 }

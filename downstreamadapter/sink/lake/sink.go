@@ -21,11 +21,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/pingcap/ticdc/downstreamadapter/sink/statistics"
 	"github.com/pingcap/ticdc/pkg/common"
 	commonEvent "github.com/pingcap/ticdc/pkg/common/event"
 	"github.com/pingcap/ticdc/pkg/config"
 	"github.com/pingcap/ticdc/pkg/errors"
-	"github.com/pingcap/ticdc/pkg/metrics"
 	"github.com/pingcap/ticdc/pkg/sink/spool"
 	"github.com/pingcap/ticdc/pkg/writelease"
 	"golang.org/x/sync/errgroup"
@@ -45,7 +45,7 @@ type Sink struct {
 	client                *httpClient
 	spool                 *spool.Spool
 	lanes                 []*tableLane
-	statistics            *metrics.Statistics
+	statistics            *statistics.Statistics
 	ctx                   context.Context
 	cancel                context.CancelCauseFunc
 	normal                atomic.Bool
@@ -87,7 +87,7 @@ func New(ctx context.Context, id common.ChangeFeedID, cfg *config.ChangefeedConf
 		return nil, err
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
-	s := &Sink{opts: o, client: newHTTPClient(o), spool: buffer, ctx: ctx, cancel: cancel, done: make(chan struct{}), admissionChanged: make(chan struct{}), statistics: metrics.NewStatistics(id, keyspaceID, "lake")}
+	s := &Sink{opts: o, client: newHTTPClient(o), spool: buffer, ctx: ctx, cancel: cancel, done: make(chan struct{}), admissionChanged: make(chan struct{}), statistics: statistics.New(id, keyspaceID)}
 	s.normal.Store(true)
 	for i := 0; i < o.workers; i++ {
 		s.lanes = append(s.lanes, &tableLane{sink: s, input: make(chan workItem, o.sourceEvents), schemas: newSchemaManager(s.client, o), batches: make(map[string]*pendingTable)})

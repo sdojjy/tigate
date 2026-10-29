@@ -412,10 +412,10 @@ pipeline. Its legacy driver/API identifiers must remain unchanged.
 
 ```sh
 python3 -m unittest discover -s tests/integration_tests/lake_native -p 'test_*.py'
-go test -p 2 -race ./downstreamadapter/sink/lake ./downstreamadapter/sink ./pkg/sink/spool ./pkg/errors ./pkg/config ./downstreamadapter/sink/metrics -count=1 -timeout=180s
+go test -p 2 -race ./downstreamadapter/sink/lake ./downstreamadapter/sink ./pkg/sink/spool ./pkg/errors ./pkg/config ./downstreamadapter/sink/statistics -count=1 -timeout=180s
 go test -p 2 -race ./pkg/common/event -run 'TestTableSchemaStore|TestNeedTableNameStore' -count=1
 go test -p 2 ./pkg/metrics -run TestDownstreamTypeFromSinkURI -count=1
-tools/bin/golangci-lint run --timeout 5m ./downstreamadapter/sink/lake/... ./downstreamadapter/sink/metrics/...
+tools/bin/golangci-lint run --timeout 5m ./downstreamadapter/sink/lake/... ./downstreamadapter/sink/statistics/...
 ```
 
 The local managed suite supplies `LAKE_NATIVE_TEST_URI` to the Go live tests via
