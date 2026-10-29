@@ -95,7 +95,7 @@ func New(ctx context.Context, id common.ChangeFeedID, cfg *config.ChangefeedConf
 	return s, nil
 }
 func (s *Sink) SinkType() common.SinkType { return common.LakeSinkType }
-func (s *Sink) IsNormal() bool { return s.normal.Load() && s.ctx.Err() == nil }
+func (s *Sink) IsNormal() bool            { return s.normal.Load() && s.ctx.Err() == nil }
 
 func (s *Sink) BatchCount() int { return min(s.opts.sourceEvents, s.opts.batchRows) }
 
