@@ -14,14 +14,12 @@
 
 package errors
 
-import "github.com/pingcap/errors"
-
 var (
-	ErrLakeProtocol    = errors.Normalize("Lake request %s: %s", errors.RFCCodeText("CDC:ErrLakeProtocol"))
-	ErrLakeInvalidData = errors.Normalize(
-		"invalid Lake sink data: %s", errors.RFCCodeText("CDC:ErrLakeInvalidData"))
-	ErrLakeExecution = errors.Normalize(
-		"Lake mutation failed", errors.RFCCodeText("CDC:ErrLakeExecution"))
-	ErrLakeCommitUnknown = errors.Normalize(
-		"Lake mutation commit state is unknown", errors.RFCCodeText("CDC:ErrLakeCommitUnknown"))
+	ErrLakeProtocol    = Normalize("Lake request %s: %s", RFCCodeText("CDC:ErrLakeProtocol"))
+	ErrLakeInvalidData = Normalize(
+		"invalid Lake sink data: %s", RFCCodeText("CDC:ErrLakeInvalidData"))
+	ErrLakeExecution = Normalize(
+		"Lake mutation failed", RFCCodeText("CDC:ErrLakeExecution"))
+	ErrLakeCommitUnknown = Normalize(
+		"Lake mutation commit state is unknown", RFCCodeText("CDC:ErrLakeCommitUnknown"))
 )
